@@ -4,16 +4,17 @@ import chat.revolt.sentinel.lookout.Constants
 import chat.revolt.sentinel.lookout.RevoltAPI
 import chat.revolt.sentinel.lookout.RevoltHttp
 import chat.revolt.sentinel.lookout.RevoltJson
-import chat.revolt.sentinel.lookout.realtime.frames.receivable.AnyFrame
-import chat.revolt.sentinel.lookout.realtime.frames.receivable.BulkFrame
-import chat.revolt.sentinel.lookout.realtime.frames.receivable.ReadyFrame
+import chat.revolt.sentinel.lookout.realtime.frames.receivable.*
 import chat.revolt.sentinel.lookout.realtime.frames.sendable.AuthorizationFrame
 import chat.revolt.sentinel.lookout.realtime.frames.sendable.BeginTypingFrame
 import chat.revolt.sentinel.lookout.realtime.frames.sendable.EndTypingFrame
 import chat.revolt.sentinel.lookout.realtime.frames.sendable.PingFrame
+import chat.revolt.sentinel.lookout.routes.server.fetchMember
+import chat.revolt.sentinel.lookout.schemas.Member
 import io.ktor.client.plugins.websocket.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.channels.consumeEach
+import org.slf4j.LoggerFactory
 
 enum class DisconnectionState {
     Disconnected,
@@ -26,6 +27,8 @@ sealed class RealtimeSocketFrames {
 }
 
 object RealtimeSocket {
+    private val logger = LoggerFactory.getLogger(this::class.java)!!
+
     var socket: WebSocketSession? = null
 
     var disconnectionState = DisconnectionState.Reconnecting
@@ -55,7 +58,7 @@ object RealtimeSocket {
                     val frameString = frame.readText()
                     val frameType =
                         RevoltJson.decodeFromString(AnyFrame.serializer(), frameString).type
-                    
+
                     RevoltAPI.wsFrameChannel.send(frameType)
 
                     handleFrame(frameType, frameString)
@@ -75,7 +78,11 @@ object RealtimeSocket {
 
     private suspend fun handleFrame(type: String, rawFrame: String) {
         when (type) {
-            "Pong" -> {}
+            "Pong" -> {
+                val pongFrame = RevoltJson.decodeFromString(PingFrame.serializer(), rawFrame)
+                logger.debug("Pong received: ${pongFrame.data}ms")
+                RevoltAPI.wsFrameChannel.send(pongFrame)
+            }
 
             "Bulk" -> {
                 val bulkFrame = RevoltJson.decodeFromString(BulkFrame.serializer(), rawFrame)
@@ -99,8 +106,71 @@ object RealtimeSocket {
                 RevoltAPI.emojiCache.putAll(emojiMap)
             }
 
+            "Message" -> {
+                val messageFrame = RevoltJson.decodeFromString(MessageFrame.serializer(), rawFrame)
+
+                if (messageFrame.id == null) {
+                    return
+                }
+
+                RevoltAPI.messageCache[messageFrame.id] = messageFrame
+
+                messageFrame.channel?.let {
+                    if (RevoltAPI.channelCache[it] == null) {
+                        return
+                    }
+
+                    RevoltAPI.channelCache[it] =
+                        RevoltAPI.channelCache[it]!!.copy(lastMessageID = messageFrame.id)
+
+                    RevoltAPI.wsFrameChannel.send(messageFrame)
+                }
+            }
+
+            "ChannelCreate" -> {
+                val channelCreateFrame = RevoltJson.decodeFromString(ChannelCreateFrame.serializer(), rawFrame)
+
+                if (channelCreateFrame.id == null) {
+                    return
+                }
+
+                RevoltAPI.channelCache[channelCreateFrame.id] = channelCreateFrame
+
+                RevoltAPI.wsFrameChannel.send(channelCreateFrame)
+            }
+
+            "ServerMemberLeave" -> {
+                val serverMemberLeaveFrame = RevoltJson.decodeFromString(ServerMemberLeaveFrame.serializer(), rawFrame)
+
+                RevoltAPI.members.removeMember(serverMemberLeaveFrame.id, serverMemberLeaveFrame.user)
+
+                RevoltAPI.wsFrameChannel.send(serverMemberLeaveFrame)
+            }
+
+            "ServerMemberJoin" -> {
+                val serverMemberJoinFrame = RevoltJson.decodeFromString(ServerMemberJoinFrame.serializer(), rawFrame)
+
+                fetchMember(serverMemberJoinFrame.id, serverMemberJoinFrame.user)
+
+                RevoltAPI.wsFrameChannel.send(serverMemberJoinFrame)
+            }
+
+            // UI-heavy frames that do not need serverside handling.
+            // They are simply passed onto the WS frame channel.
+
+            "ChannelStopTyping" -> {
+                val channelStopTypingFrame = RevoltJson.decodeFromString(ChannelStopTypingFrame.serializer(), rawFrame)
+                RevoltAPI.wsFrameChannel.send(channelStopTypingFrame)
+            }
+
+            "ChannelStartTyping" -> {
+                val channelStartTypingFrame =
+                    RevoltJson.decodeFromString(ChannelStartTypingFrame.serializer(), rawFrame)
+                RevoltAPI.wsFrameChannel.send(channelStartTypingFrame)
+            }
+
             else -> {
-                RevoltAPI.logger.debug("Unknown frame of type \"$type\"")
+                logger.debug("Unknown frame of type \"$type\"")
             }
         }
     }

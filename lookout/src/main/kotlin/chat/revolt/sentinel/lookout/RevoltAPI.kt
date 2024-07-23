@@ -1,7 +1,9 @@
 package chat.revolt.sentinel.lookout
 
 import chat.revolt.sentinel.lookout.auth.LoginStrategy
+import chat.revolt.sentinel.lookout.internals.Members
 import chat.revolt.sentinel.lookout.realtime.RealtimeSocket
+import chat.revolt.sentinel.lookout.routes.user.fetchSelf
 import chat.revolt.sentinel.lookout.schemas.Emoji
 import chat.revolt.sentinel.lookout.schemas.Message
 import chat.revolt.sentinel.lookout.schemas.Server
@@ -16,6 +18,7 @@ import io.ktor.client.request.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import java.net.SocketException
@@ -92,6 +95,8 @@ object RevoltAPI {
     var sessionId: String = ""
         private set
 
+    val members = Members()
+
     @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
     val realtimeContext = newSingleThreadContext("RealtimeContext")
     val wsFrameChannel = Channel<Any>(Channel.UNLIMITED)
@@ -136,6 +141,7 @@ object RevoltAPI {
 
     var timer: Timer? = null
     private suspend fun startSocketOps() {
+        fetchSelf()
         connectWS()
 
         // Send a ping to the WS server every 30 seconds. Unlike Killjoy this uses a JVM timer
@@ -155,8 +161,8 @@ object RevoltAPI {
         emojiCache.clear()
         messageCache.clear()
 
+        members.clear()
         /*
-        TODO members.clear()
         TODO unreads.clear()
          */
 
@@ -164,3 +170,6 @@ object RevoltAPI {
         timer?.cancel()
     }
 }
+
+@Serializable
+data class RevoltError(val type: String)

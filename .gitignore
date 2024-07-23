@@ -5,3 +5,5 @@
 build
 
 .idea/discord.xml
+
+sentinel*.db
